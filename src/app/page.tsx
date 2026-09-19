@@ -106,6 +106,17 @@ export default function Home() {
     }
   }, [step, closeStream]);
 
+  useEffect(() => {
+    if (!isSearching) return;
+    const t = setTimeout(() => {
+      closeStream();
+      setIsSearching(false);
+      setStep("FAILED");
+      setError("Search timed out after 3 minutes. Please try again.");
+    }, 180000);
+    return () => clearTimeout(t);
+  }, [isSearching, closeStream]);
+
   const handleSearch = useCallback(async () => {
     const trimmed = query.trim();
     if (!trimmed || isSearching) return;
