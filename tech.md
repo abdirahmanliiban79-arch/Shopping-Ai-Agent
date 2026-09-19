@@ -67,13 +67,11 @@ This document details the tech stack, component architectures, environment confi
 
 * **Step Strategy**:
 
-  1. `step.run('discover-urls')`: Query SerpAPI for the product, returning top candidate URLs (up to 10 max).
+  1. `step.run('discover-urls')`: Query SerpAPI for the product, returning top candidate URLs (up to 10 max). Falls back to a Google Shopping (`tbm=shop`) query if fewer than 3 eligible store candidates are found.
 
-  2. `step.run('scrape-pages')`: Parallel or sequential invocation of Playwright scraper for up to 10 URLs.
+  2. `step.run('scrape-and-verify')`: Interleaved pipeline — each discovered URL is scraped with Playwright and immediately sent to OpenRouter for structured price extraction. Stops early once **2 VERIFIED in-stock prices** are found (Gold + Silver ranks).
 
-  3. `step.run('verify-prices')`: Send raw extracted page context to OpenRouter for structured price extraction.
-
-  4. `step.run('save-and-rank')`: Save results to MongoDB, compute top 3 verified cheapest options, and push state to client.
+  3. `step.run('save-and-rank')`: Save results to MongoDB, compute top 3 verified cheapest options, and push state to client.
 
 ### 3.3 Playwright Web Scraper
 
