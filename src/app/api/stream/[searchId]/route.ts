@@ -45,7 +45,7 @@ export async function GET(
       const handleEvent = (event: ProgressEvent) => {
         send(event);
         if (event.step === "COMPLETED" || event.step === "FAILED") {
-          cleanup();
+          setTimeout(cleanup, 1500);
         }
       };
 
@@ -62,7 +62,7 @@ export async function GET(
         send(event);
       }
       if (terminalIdx !== -1) {
-        cleanup();
+        setTimeout(cleanup, 1500);
       }
     },
     cancel() {
