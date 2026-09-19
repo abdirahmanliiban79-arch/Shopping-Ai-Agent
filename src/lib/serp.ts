@@ -166,5 +166,61 @@ export async function discoverUrls(query: string): Promise<DiscoveredUrl[]> {
     });
   }
 
+  if (seen.size < 3) {
+    const fallback = await shoppingFallback(query, apiKey, seen);
+    if (fallback.length > 0) return fallback;
+  }
+
   return Array.from(seen.values());
+}
+
+async function shoppingFallback(
+  query: string,
+  apiKey: string,
+  existing: Map<string, DiscoveredUrl>
+): Promise<DiscoveredUrl[]> {
+  const params = new URLSearchParams({
+    engine: "google",
+    q: query,
+    tbm: "shop",
+    location: "United States",
+    hl: "en",
+    gl: "us",
+    num: "20",
+    api_key: apiKey,
+  });
+
+  let res: Response;
+  try {
+    res = await fetch(`https://serpapi.com/search.json?${params.toString()}`, {
+      signal: AbortSignal.timeout(20000),
+    });
+  } catch {
+    return Array.from(existing.values());
+  }
+
+  if (!res.ok) return Array.from(existing.values());
+
+  const data: unknown = await res.json().catch(() => null);
+  const results = (data as { shopping_results?: SerpResult[] } | null)?.shopping_results ?? [];
+
+  const fallback: DiscoveredUrl[] = Array.from(existing.values());
+  const seen = new Map<string, boolean>();
+  for (const u of fallback) seen.set(u.storeDomain, true);
+
+  for (const item of results) {
+    const url = item.product_link ?? item.link;
+    if (!url) continue;
+    const domain = getDomain(url);
+    if (!domain || isBlockedDomain(domain)) continue;
+    if (seen.has(domain) || fallback.length >= 10) break;
+    seen.set(domain, true);
+    fallback.push({
+      url,
+      storeDomain: domain,
+      storeName: prettifyName(domain),
+    });
+  }
+
+  return fallback;
 }
