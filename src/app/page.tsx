@@ -56,6 +56,8 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const logFeedRef = useRef<HTMLDivElement | null>(null);
+  const stepRef = useRef<string | null>(null);
+  stepRef.current = step;
 
   const closeStream = useCallback(() => {
     esRef.current?.close();
@@ -136,7 +138,7 @@ export default function Home() {
         handleEvent(event);
       };
       es.onerror = () => {
-        if (terminal(step ?? "")) return;
+        if (terminal(stepRef.current ?? "")) return;
         setStep("FAILED");
         setError("Lost connection to the search stream.");
         setIsSearching(false);
