@@ -3,11 +3,13 @@ import type { ProductSearchEvent } from "./client";
 import { connectDB } from "../db";
 import { SearchHistory, ProductResult } from "../models";
 import { discoverUrls } from "../serp";
-import { scrapePages } from "../scraper";
-import { verifyPages } from "../verify";
+import { createScraper } from "../scraper";
+import { verifyPage } from "../verify";
 import { rankResults } from "../rank";
 import { emitProgress, initLog, getLog } from "../eventBus";
-import type { ProgressEvent, LiveResult, ScrapedPage, DiscoveredUrl } from "../types";
+import type { ProgressEvent, LiveResult, ScrapedPage, DiscoveredUrl, ExtractionResult } from "../types";
+
+const TARGET_VERIFIED = 2;
 
 function liveFrom(
   storeName: string,
@@ -37,6 +39,12 @@ function progress(
   const evt: ProgressEvent = { searchId, step, progress: pct, message, liveResult: liveResult ?? null };
   emitProgress(evt);
   return evt;
+}
+
+interface VerifiedItem {
+  storeName: string;
+  url: string;
+  result: ExtractionResult;
 }
 
 export const productSearchFn = inngest.createFunction(
@@ -70,82 +78,106 @@ export const productSearchFn = inngest.createFunction(
         return urls;
       });
 
-      const scraped: ScrapedPage[] = await step.run("scrape-pages", async () => {
+      const outcome = await step.run("scrape-and-verify", async () => {
+        const scraper = await createScraper();
+        const pages: ScrapedPage[] = [];
+        const verified: VerifiedItem[] = [];
+        let stop = false;
         let done = 0;
-        const pages = await scrapePages(urls, (d, total, storeName) => {
-          if (d > done) {
-            done = d;
-            progress(
-              searchId,
-              "EXTRACTING",
-              Math.min(20 + Math.round((d / total) * 30), 50),
-              `Scraping ${d} of ${total} pages (latest: ${storeName})...`
-            );
-          }
-        });
-        const blocked = pages.filter((p) => p.status === "BLOCKED").length;
-        const failed = pages.filter((p) => p.status === "FAILED").length;
-        const ok = pages.filter((p) => p.status === "OK").length;
-        progress(
-          searchId,
-          "EXTRACTING",
-          50,
-          `Extraction done: ${ok} scraped, ${blocked} blocked, ${failed} failed`
-        );
-        if (ok === 0) {
-          throw new Error("All store pages were blocked or unreachable — cannot verify any prices");
-        }
-        return pages;
-      });
+        let nextIndex = 0;
 
-      const verified = await step.run("verify-prices", async () => {
-        const verifiable: ScrapedPage[] = scraped.filter(
-          (p: ScrapedPage) => p.status === "OK" && p.content && p.content.length > 50
-        );
-        const seen = new Set<string>();
-        for (const p of scraped) {
-          if (p.status !== "OK") {
-            if (seen.has(p.storeDomain)) continue;
-            seen.add(p.storeDomain);
-            progress(
-              searchId,
-              "VERIFYING",
-              55,
-              `${p.storeName}: ${p.status === "BLOCKED" ? "blocked by anti-bot" : "extraction failed"}`,
-              liveFrom(p.storeName, p.url, null, null, p.status === "BLOCKED" ? "UNVERIFIED_BLOCKED" : "FAILED", {
-                reason: p.error,
-              })
-            );
-          }
+        const emitUnverified = (p: ScrapedPage) => {
+          progress(
+            searchId,
+            "VERIFYING",
+            55,
+            `${p.storeName}: ${p.status === "BLOCKED" ? "blocked by anti-bot" : "extraction failed"}`,
+            liveFrom(p.storeName, p.url, null, null, p.status === "BLOCKED" ? "UNVERIFIED_BLOCKED" : "FAILED", {
+              reason: p.error,
+            })
+          );
+        };
+
+        try {
+          const total = urls.length;
+          const CONCURRENCY = 3;
+
+          const worker = async () => {
+            while (nextIndex < total) {
+              if (stop) return;
+              const index = nextIndex++;
+              const sp = await scraper.scrape(urls[index]);
+              pages.push(sp);
+              done++;
+              progress(
+                searchId,
+                "EXTRACTING",
+                Math.min(20 + Math.round((done / total) * 30), 50),
+                `Scraping ${done} of ${total} pages (latest: ${sp.storeName})...`
+              );
+
+              if (stop) return;
+
+              if (sp.status !== "OK" || !sp.content || sp.content.length <= 50) {
+                emitUnverified(sp);
+                continue;
+              }
+
+              const result = await verifyPage({ query, pageText: sp.content });
+              const isHit =
+                result.verificationStatus === "VERIFIED" &&
+                result.price !== null &&
+                result.price > 0 &&
+                result.inStock;
+
+              progress(
+                searchId,
+                "VERIFYING",
+                Math.min(50 + Math.round((done / total) * 25), 75),
+                isHit
+                  ? `${sp.storeName}: verified at ${result.price} ${result.currency}`
+                  : `${sp.storeName}: ${result.reason || "uncertain"}`,
+                liveFrom(sp.storeName, sp.url, result.price, result.price !== null ? result.currency : null, result.verificationStatus, {
+                  productTitle: result.productTitle,
+                  inStock: result.inStock,
+                  confidenceScore: result.confidenceScore,
+                  reason: result.reason,
+                })
+              );
+
+              if (isHit) {
+                verified.push({ storeName: sp.storeName, url: sp.url, result });
+                if (verified.length >= TARGET_VERIFIED && nextIndex < total) {
+                  stop = true;
+                  progress(
+                    searchId,
+                    "VERIFYING",
+                    75,
+                    `Found ${TARGET_VERIFIED} verified stores — stopping search early to save resources`
+                  );
+                }
+              }
+            }
+          };
+
+          await Promise.all(
+            Array.from({ length: Math.min(CONCURRENCY, total) }, () => worker())
+          );
+        } finally {
+          await scraper.close();
         }
-        const verified: { storeName: string; url: string; result: any }[] = await verifyPages({
-          query,
-          pages: verifiable.map((p) => ({ storeName: p.storeName, url: p.url, pageText: p.content! })),
-          onResult: (storeName, url, result) => {
-            progress(
-              searchId,
-              "VERIFYING",
-              Math.min(50 + Math.round(((seen.size + 1) / (verifiable.length + 1)) * 25), 75),
-              `${storeName}: ${result.verificationStatus === "VERIFIED" ? `verified at ${result.price} ${result.currency}` : result.reason || "uncertain"}`,
-              liveFrom(storeName, url, result.price, result.price !== null ? result.currency : null, result.verificationStatus, {
-                productTitle: result.productTitle,
-                inStock: result.inStock,
-                confidenceScore: result.confidenceScore,
-                reason: result.reason,
-              })
-            );
-          },
-        });
-        return verified;
+
+        return { pages, verified, stoppedEarly: stop };
       });
 
       const final = await step.run("save-and-rank", async () => {
         await connectDB();
-        const scrapedMap = new Map(scraped.map((p) => [p.url, p] as const));
+        const { pages, verified } = outcome as { pages: ScrapedPage[]; verified: VerifiedItem[] };
+        const pageMap = new Map(pages.map((p) => [p.url, p] as const));
 
         const docs: any[] = [];
         for (const v of verified) {
-          const sp = scrapedMap.get(v.url);
+          const sp = pageMap.get(v.url);
           docs.push({
             searchId: searchIdObj,
             storeName: v.storeName,
@@ -160,7 +192,7 @@ export const productSearchFn = inngest.createFunction(
             reason: v.result.reason || null,
           });
         }
-        for (const p of scraped) {
+        for (const p of pages) {
           if (
             p.status !== "OK" &&
             !docs.some((d) => d.productUrl === p.url)
@@ -207,7 +239,8 @@ export const productSearchFn = inngest.createFunction(
             searchId,
             "AGGREGATING",
             90,
-            `Saved ${saved.length} results, ranked top ${top3.length} cheapest stores`
+            `Saved ${saved.length} results, ranked top ${top3.length} cheapest stores` +
+              (outcome.stoppedEarly ? " (stopped early)" : "")
           );
         }
 
@@ -222,7 +255,7 @@ export const productSearchFn = inngest.createFunction(
           searchId,
           "COMPLETED",
           100,
-          `Search complete — top ${final.topCount} cheapest verified stores found`,
+          `Search complete — top ${final.topCount} cheapest verified store${final.topCount > 1 ? "s" : ""} found`,
           lastResult?.liveResult ?? undefined
         );
       } else {
