@@ -47,6 +47,7 @@ Every search request initiated by the user traverses a strictly defined lifecycl
    * Filter out aggregator/forum domains (e.g., Reddit, Quora, Wikipedia, Pinterest, YouTube).
    * Restrict maximum scraped stores to **10 unique domain product links**.
    * Prioritize direct e-commerce landing pages (`/product/`, `/dp/`, `/p/`, `/buy/`).
+3. **Google Shopping Fallback**: If the primary organic/shopping results yield fewer than 3 eligible store candidates (e.g., Google returned mostly social/forum content), automatically re-run the query with `tbm=shop` (Google Shopping vertical) to surface direct store product links.
 
 ### Rule 2.2: Page Extraction & Retry Logic
 1. **Concurrency**: Scrape up to 10 discovered product pages using Playwright workers.
@@ -55,6 +56,7 @@ Every search request initiated by the user traverses a strictly defined lifecycl
    * **Network Timeout / 5xx Error**: Retry once after a 2-second delay. If it fails a second time, record status as `FAILED`.
    * **CAPTCHA / Anti-Bot / Cloudflare Block**: Do **not** retry. Mark status immediately as `UNVERIFIED_BLOCKED`.
    * **404 / Page Not Found**: Skip immediately, mark status as `FAILED`.
+4. **Early-Stop Optimization**: Scraping and AI verification are interleaved (each page is scraped then verified immediately). As soon as **2 VERIFIED in-stock prices** are found (🥇 Gold + 🥈 Silver), the scraper stops processing remaining pages to conserve resources and time. If the 2 verified stores happen to be the last pages in the queue, the remaining pages are all processed normally.
 
 ### Rule 2.3: AI Price Parsing & Extraction Logic
 OpenRouter consumes the raw page content (or cleaned body text) and must apply strict rules:
