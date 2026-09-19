@@ -8,4 +8,4 @@ build/
 *.log
 .DS_Store
 playwright-report/
-test-results/
+test-results/tsconfig.tsbuildinfo
