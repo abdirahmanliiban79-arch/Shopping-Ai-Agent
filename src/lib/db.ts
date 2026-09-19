@@ -1,13 +1,9 @@
 import mongoose from "mongoose";
 
-const MONGODB_URI = process.env.MONGODB_URI as string;
+const MONGODB_URI = process.env.MONGODB_URI;
 
-if (!MONGODB_URI) {
-  throw new Error("MONGODB_URI is not defined in environment variables");
-}
-
-function extractDbName(uri: string): string {
-  const match = uri.match(/mongodb(?:\+srv)?:\/\/[^/]+\/([^?]*)/);
+function extractDbName(uri: string | undefined): string {
+  const match = uri?.match(/mongodb(?:\+srv)?:\/\/[^/]+\/([^?]*)/);
   return match?.[1] || "shoppingAgent";
 }
 
@@ -22,6 +18,7 @@ const cache = global._mongooseCache ?? { conn: null, promise: null };
 global._mongooseCache = cache;
 
 export async function connectDB(): Promise<mongoose.Connection> {
+  if (!MONGODB_URI) throw new Error("MONGODB_URI is not defined in environment variables");
   if (cache.conn) return cache.conn;
   if (!cache.promise) {
     cache.promise = mongoose

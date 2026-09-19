@@ -3,7 +3,6 @@ import type { ProductSearchEvent } from "./client";
 import { connectDB } from "../db";
 import { SearchHistory, ProductResult } from "../models";
 import { discoverUrls } from "../serp";
-import { createScraper } from "../scraper";
 import { verifyPage } from "../verify";
 import { rankResults } from "../rank";
 import { emitProgress, initLog, getLog } from "../eventBus";
@@ -79,6 +78,7 @@ export const productSearchFn = inngest.createFunction(
       });
 
       const outcome = await step.run("scrape-and-verify", async () => {
+        const { createScraper } = await import("../scraper");
         const scraper = await createScraper();
         const pages: ScrapedPage[] = [];
         const verified: VerifiedItem[] = [];
