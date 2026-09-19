@@ -146,15 +146,39 @@ async function scrapeSingleWithRetry(
   return second;
 }
 
+export interface ScraperHandle {
+  scrape: (target: DiscoveredUrl) => Promise<ScrapedPage>;
+  close: () => Promise<void>;
+}
+
+export async function createScraper(): Promise<ScraperHandle> {
+  const browser: Browser = await chromium.launch({ headless: true });
+  return {
+    scrape: (target: DiscoveredUrl) => scrapeSingleWithRetry(browser, target),
+    close: async () => {
+      await browser.close().catch(() => {});
+    },
+  };
+}
+
+export interface ScrapeOptions {
+  onProgress?: (done: number, total: number, storeName: string) => void;
+  shouldStop?: () => boolean;
+}
+
 export async function scrapePages(
   urls: DiscoveredUrl[],
-  onProgress?: (done: number, total: number, storeName: string) => void
+  opts?: ScrapeOptions | ((done: number, total: number, storeName: string) => void)
 ): Promise<ScrapedPage[]> {
+  const options: ScrapeOptions =
+    typeof opts === "function" ? { onProgress: opts } : opts ?? {};
+  const { onProgress, shouldStop } = options;
+
   const total = urls.length;
   const results = new Array<ScrapedPage | null>(total).fill(null);
   let done = 0;
 
-  const browser: Browser = await chromium.launch({ headless: true });
+  const scraper = await createScraper();
 
   try {
     let nextIndex = 0;
@@ -162,8 +186,9 @@ export async function scrapePages(
 
     const worker = async () => {
       while (nextIndex < total) {
+        if (shouldStop?.()) return;
         const index = nextIndex++;
-        const result = await scrapeSingleWithRetry(browser, urls[index]);
+        const result = await scraper.scrape(urls[index]);
         results[index] = result;
         done++;
         onProgress?.(done, total, result.storeName);
@@ -180,10 +205,10 @@ export async function scrapePages(
           ...urls[i],
           status: "FAILED" as const,
           content: null,
-          error: "Scraping did not complete",
+          error: shouldStop?.() ? "Skipped (target verified results reached)" : "Scraping did not complete",
         }
     );
   } finally {
-    await browser.close();
+    await scraper.close();
   }
 }
