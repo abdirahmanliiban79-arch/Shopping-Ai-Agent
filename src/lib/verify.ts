@@ -46,7 +46,7 @@ async function callModel(
     headers: {
       Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
       "Content-Type": "application/json",
-      "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || "https://localhost:3000",
+      "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL || "https://localhost:3000",
       "X-Title": "Shopping AI Agent",
     },
     body: JSON.stringify({

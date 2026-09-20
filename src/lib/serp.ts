@@ -213,7 +213,8 @@ async function shoppingFallback(
     if (!url) continue;
     const domain = getDomain(url);
     if (!domain || isBlockedDomain(domain)) continue;
-    if (seen.has(domain) || fallback.length >= 10) break;
+    if (fallback.length >= 10) break;
+    if (seen.has(domain)) continue;
     seen.set(domain, true);
     fallback.push({
       url,

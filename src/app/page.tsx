@@ -57,7 +57,6 @@ export default function Home() {
   const esRef = useRef<EventSource | null>(null);
   const logFeedRef = useRef<HTMLDivElement | null>(null);
   const stepRef = useRef<string | null>(null);
-  stepRef.current = step;
 
   const closeStream = useCallback(() => {
     esRef.current?.close();
@@ -66,6 +65,7 @@ export default function Home() {
 
   const handleEvent = useCallback((event: ProgressEvent) => {
     setStep(event.step);
+    stepRef.current = event.step;  // update ref synchronously so onerror sees the correct value
     setProgress((prev) => Math.max(prev, event.progress));
     setStatusMessage(event.message);
     setLogLines((prev) => [
@@ -82,9 +82,15 @@ export default function Home() {
         lr.price !== null &&
         lr.price > 0
       ) {
-        setVerified((prev) => [...prev, { ...lr, price: lr.price! }]);
+        setVerified((prev) => {
+          if (prev.some((v) => v.productUrl === lr.productUrl)) return prev;
+          return [...prev, { ...lr, price: lr.price! }];
+        });
       } else if (lr.verificationStatus !== "VERIFIED") {
-        setSkipped((prev) => [...prev, lr]);
+        setSkipped((prev) => {
+          if (prev.some((s) => s.productUrl === lr.productUrl)) return prev;
+          return [...prev, lr];
+        });
       }
     }
   }, []);
@@ -104,6 +110,7 @@ export default function Home() {
       closeStream();
       setIsSearching(false);
     }
+    // stepRef is now kept current inside handleEvent; no need to sync it here
   }, [step, closeStream]);
 
   useEffect(() => {
@@ -112,8 +119,8 @@ export default function Home() {
       closeStream();
       setIsSearching(false);
       setStep("FAILED");
-      setError("Search timed out after 3 minutes. Please try again.");
-    }, 180000);
+      setError("Search timed out after 5 minutes. Please try again.");
+    }, 300000);
     return () => clearTimeout(t);
   }, [isSearching, closeStream]);
 
@@ -145,15 +152,24 @@ export default function Home() {
       const es = new EventSource(`/api/stream/${data.searchId}`);
       esRef.current = es;
       es.onmessage = (e) => {
-        const event: ProgressEvent = JSON.parse(e.data);
-        handleEvent(event);
+        try {
+          const event: ProgressEvent = JSON.parse(e.data);
+          handleEvent(event);
+        } catch {
+          // skip malformed frame; stream continues
+        }
       };
       es.onerror = () => {
         if (terminal(stepRef.current ?? "")) return;
-        setStep("FAILED");
-        setError("Lost connection to the search stream.");
-        setIsSearching(false);
-        closeStream();
+        // readyState CONNECTING = auto-reconnect in progress; the server
+        // replays missed events on reconnect, so just wait it out.
+        // Only give up when the browser has fully closed the connection.
+        if (es.readyState === EventSource.CLOSED) {
+          setStep("FAILED");
+          setError("Lost connection to the search stream.");
+          setIsSearching(false);
+          closeStream();
+        }
       };
     } catch (err) {
       setStep("FAILED");
@@ -162,7 +178,7 @@ export default function Home() {
       );
       setIsSearching(false);
     }
-  }, [query, isSearching, closeStream, handleEvent, step]);
+  }, [query, isSearching, closeStream, handleEvent]);
 
   const podium = [...verified]
     .sort((a, b) => a.price - b.price)
@@ -172,7 +188,7 @@ export default function Home() {
   const medals = ["🥇 1st Place", "🥈 2nd Place", "🥉 3rd Place"];
 
   const hasTerminalStep = step === "COMPLETED" || step === "FAILED";
-  const showPodium = podium.length > 0 || (step === "COMPLETED" && podium.length > 0);
+  const showPodium = podium.length > 0;
 
   return (
     <div className="container">
@@ -188,7 +204,7 @@ export default function Home() {
             onKeyDown={(e) => {
               if (e.key === "Enter") void handleSearch();
             }}
-            placeholder="e.g. Sony WH-1000XM5 buy price"
+            placeholder="tusaale Iphone jibis pro fakis 😁"
             disabled={isSearching}
           />
           <button onClick={() => void handleSearch()} disabled={isSearching}>
@@ -248,7 +264,7 @@ export default function Home() {
                   className="visit-link"
                   href={entry.productUrl}
                   target="_blank"
-                  rel="noopener"
+                  rel="noopener noreferrer"
                 >
                   Visit Store →
                 </a>
@@ -267,7 +283,7 @@ export default function Home() {
             const badge = badgeFor(entry.verificationStatus);
             return (
               <div className="unverified-item" key={i}>
-                <a href={entry.productUrl} target="_blank" rel="noopener">
+                <a href={entry.productUrl} target="_blank" rel="noopener noreferrer">
                   {entry.storeName}
                 </a>
                 {badge && <span className={badge.className}>{badge.label}</span>}

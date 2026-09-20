@@ -3,6 +3,7 @@ import type { ProductSearchEvent } from "./client";
 import { connectDB } from "../db";
 import { SearchHistory, ProductResult } from "../models";
 import { discoverUrls } from "../serp";
+import { createScraper } from "../scraper";
 import { verifyPage } from "../verify";
 import { rankResults } from "../rank";
 import { emitProgress, initLog, getLog } from "../eventBus";
@@ -51,7 +52,6 @@ export const productSearchFn = inngest.createFunction(
   { event: PRODUCT_SEARCH_EVENT },
   async ({ event, step }: { event: ProductSearchEvent; step: any }) => {
     const { query, searchId } = event.data;
-    const searchIdObj = new (await import("mongoose")).default.Types.ObjectId(searchId);
     if (getLog(searchId).length === 0) {
       initLog(searchId);
       progress(searchId, "INITIALIZING", 5, `Initializing search for "${query}"...`);
@@ -78,7 +78,6 @@ export const productSearchFn = inngest.createFunction(
       });
 
       const outcome = await step.run("scrape-and-verify", async () => {
-        const { createScraper } = await import("../scraper");
         const scraper = await createScraper();
         const pages: ScrapedPage[] = [];
         const verified: VerifiedItem[] = [];
@@ -156,6 +155,9 @@ export const productSearchFn = inngest.createFunction(
                     `Found ${TARGET_VERIFIED} verified stores — stopping search early to save resources`
                   );
                 }
+              } else {
+                // Track OK-scraped pages that were uncertain so we can save them later
+                pages.push({ ...sp, _uncertain: true } as any);
               }
             }
           };
@@ -172,6 +174,8 @@ export const productSearchFn = inngest.createFunction(
 
       const final = await step.run("save-and-rank", async () => {
         await connectDB();
+        const { ObjectId } = (await import("mongoose")).default.Types;
+        const searchIdObj = new ObjectId(searchId);
         const { pages, verified } = outcome as { pages: ScrapedPage[]; verified: VerifiedItem[] };
         const pageMap = new Map(pages.map((p) => [p.url, p] as const));
 
@@ -193,21 +197,34 @@ export const productSearchFn = inngest.createFunction(
           });
         }
         for (const p of pages) {
-          if (
-            p.status !== "OK" &&
-            !docs.some((d) => d.productUrl === p.url)
-          ) {
-            docs.push({
-              searchId: searchIdObj,
-              storeName: p.storeName,
-              storeDomain: p.storeDomain,
-              productUrl: p.url,
-              price: null,
-              currency: "USD",
-              inStock: null,
-              verificationStatus: p.status === "BLOCKED" ? "UNVERIFIED_BLOCKED" : "FAILED",
-              reason: p.error || (p.status === "BLOCKED" ? "blocked by anti-bot" : "extraction failed"),
-            });
+          if (!docs.some((d) => d.productUrl === p.url)) {
+            if (p.status !== "OK") {
+              // Non-OK scrapes (blocked/failed)
+              docs.push({
+                searchId: searchIdObj,
+                storeName: p.storeName,
+                storeDomain: p.storeDomain,
+                productUrl: p.url,
+                price: null,
+                currency: "USD",
+                inStock: null,
+                verificationStatus: p.status === "BLOCKED" ? "UNVERIFIED_BLOCKED" : "FAILED",
+                reason: p.error || (p.status === "BLOCKED" ? "blocked by anti-bot" : "extraction failed"),
+              });
+            } else if ((p as any)._uncertain) {
+              // OK-scraped but LLM returned UNVERIFIED_UNCERTAIN — save so users see these
+              docs.push({
+                searchId: searchIdObj,
+                storeName: p.storeName,
+                storeDomain: p.storeDomain ?? new URL(p.url).hostname,
+                productUrl: p.url,
+                price: null,
+                currency: "USD",
+                inStock: null,
+                verificationStatus: "UNVERIFIED_UNCERTAIN" as const,
+                reason: "LLM could not confirm product or price",
+              });
+            }
           }
         }
 

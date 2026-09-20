@@ -111,7 +111,7 @@ async function scrapeSingle(
       };
     }
 
-    if (isServerError(status) || (!response && text.trim() !== "" && status === null)) {
+    if (isServerError(status)) {
       return {
         ...target,
         status: "FAILED",
